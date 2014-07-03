@@ -1,26 +1,40 @@
 #shuffle.py
-#takes two input data cubes, cube_in and cube_v. it generates
-#a velocity field from cube_v and rearanges the velocity axis of cube_in
-#so that v=0 corresponds to the local velocity of cube_v.
 
-def shuffle(cube_in,cube_v):
-     
 #import necessary packages
-     from astropy.io import fits as f
-     import numpy as np
-     import matplotlib.pyplot as plt
-     import scipy.signal as sig
-     import scipy.interpolate as interpolate
-     import matplotlib.pyplot as plt
+from astropy.io import fits as f
+import numpy as np
+import matplotlib.pyplot as plt
+import scipy.signal as sig
+import scipy.interpolate as interpolate
+import matplotlib.pyplot as plt
+
+def shuffle(cube_in,align,kind=None,interp=None):
+     """
+     Takes an input cube ('cube_in') and either a cube, velocity field, or value to
+     rearrange the velocity axis of cube_in with respect to ('align'). the user must specify
+     'kind' as either 'cube', 'vfield', or 'value'. if kind='cube', shuffle will generate a
+     velocity field from the given cube. cube_in will then be shuffled onto a new velocity
+     axis such that v=0 corresponds to the value of the genrated or given velocity field.
+     if 'align' is a value, cube_in will be shifted by a constant value.
+     interp specifies the type of interpolation to use when shifting spectra onto the new
+     velocity axis. the options for the interpolation are 'linear', 'nearest', or 'cubic'
+     (WARNING: cubic takes a while to execute)
+
+     shuffle will return a file called cube_out.fits
+     """
+     
+     if kind is None:
+          kind='cube'
 
 #read input cubes and headers
      hdus_in=f.open(cube_in)
      data_in=hdus_in[0].data
      header_in=hdus_in[0].header
 
-     hdus_v=f.open(cube_v)
-     data_v=hdus_v[0].data
-     header_v=hdus_v[0].header
+     if (kind is 'cube') or (kind is 'vfield'):
+          hdus_v=f.open(align)
+          data_v=hdus_v[0].data
+          header_v=hdus_v[0].header
 
 #extract header info
      naxis_in=header_in['naxis']
@@ -31,65 +45,27 @@ def shuffle(cube_in,cube_v):
      crpix3_in=header_in['crpix3']
      crval3_in=header_in['crval3']
 
-     naxis_v=header_v['naxis']
-     naxis1_v=header_v['naxis1']
-     naxis2_v=header_v['naxis2']
-     naxis3_v=header_v['naxis3']
-     cdelt3_v=header_v['cdelt3']
-     crpix3_v=header_v['crpix3']
-     crval3_v=header_v['crval3']
+     if (kind is 'cube') or (kind is 'vfield'):
+          naxis_v=header_v['naxis']
+          naxis1_v=header_v['naxis1']
+          naxis2_v=header_v['naxis2']
 
-#slice out stokes axes
-     if naxis_in>3:
-          data_in=data_in[0,:,:,:]
-          naxis_in=3
-          del header_in['naxis4']
+#construct velocity axes and if necessary generate velocity field
 
-     if naxis_v>3:
-          data_v=data_v[0,:,:,:]
-          naxis_v=3
-
-#slice an input cube if it is larger than the other (assuming they are
-# on the same scale and the smaller cube has been sliced symmetrically)
-     if naxis1_in>naxis1_v:
-          s1=(naxis1_in/2-naxis1_v/2)
-          s2=(naxis1_in/2+naxis1_v/2)
-          s3=(naxis2_in/2-naxis2_v/2)
-          s4=(naxis2_in/2+naxis2_v/2)
-          data_in=data_in[:,s1:s2,s3:s4]
-          naxis1_in=data_in[0,0,:].size
-          naxis2_in=data_in[0,:,0].size
-
-     if naxis1_in<naxis1_v:
-          s1=(naxis1_v/2-naxis1_in/2)
-          s2=(naxis1_v/2+naxis1_in/2)
-          s3=(naxis2_v/2-naxis2_in/2)
-          s4=(naxis2_v/2+naxis2_in/2)
-          data_v=data_v[:,s1:s2,s3:s4]
-          naxis1_v=data_v[0,0,:].size
-          naxis2_v=data_v[0,:,0].size
-
-#construct velocity axes
      vaxis_in=((np.arange(naxis3_in)-(crpix3_in-1))*cdelt3_in+crval3_in)
-     vaxis_v=((np.arange(naxis3_v)-(crpix3_v-1))*cdelt3_v+crval3_v)
 
-#generate velocity field
-     data_no_nans=data_v*1.0
-     data_no_nans[np.isfinite(data_no_nans)==False]=0
-     mom=np.sum(data_no_nans,axis=0)
-     mom1=np.zeros(mom.size).reshape(naxis1_v,naxis2_v)
-     for i in np.arange(naxis1_v):
-          for j in np.arange(naxis2_v):
-               if mom[i,j]==0:
-                    mom1[i,j]=np.nan
-                    continue
-               mom1[i,j]=np.dot(vaxis_v,data_v[:,i,j])/mom[i,j]
+     if kind is 'cube':
+          naxis3_v=header_v['naxis3']
+          cdelt3_v=header_v['cdelt3']
+          crpix3_v=header_v['crpix3']
+          crval3_v=header_v['crval3']
 
-     mom1=sig.medfilt(mom1,7)
+          vaxis_v=((np.arange(naxis3_v)-(crpix3_v-1))*cdelt3_v+crval3_v)
 
-#get the original channel axis and number of original channels
-     orig_chan=np.arange(vaxis_in.size)
-     n_chan=orig_chan.size
+          mom1=vfield(data_v,vaxis_v)
+
+     if kind is 'vfield':
+          mom1=align
 
 #define the new velocity axis as twice the old axis
      new_naxis=2*naxis3_in
@@ -117,43 +93,79 @@ def shuffle(cube_in,cube_v):
      header_out['crpix3']=new_crpix
      header_out['crval3']=new_crval
 
-#Define a function to shift a given spectrum to new_vaxis using a linear
-#interpolation
-     def shift(x,y):
-          this_vaxis=vaxis_in-mom1[x,y]
-          this_spec=data_in[:,x,y]
-
-          linear_interp=interpolate.interp1d(this_vaxis,orig_chan,
-                                                  bounds_error=False,
-                                                  fill_value=0)
-          sample_chan=linear_interp(new_vaxis)
-          interp_ind=np.where((sample_chan>0)&(sample_chan<(n_chan-1)))
-          interp_ct=np.where((sample_chan<=0)&(sample_chan>=(n_chan-1)))
-
-          chan_hi=np.ceil(sample_chan[interp_ind]).astype(int)
-          chan_lo=np.floor(sample_chan[interp_ind]).astype(int)
-
-          slope=this_spec[chan_hi]-this_spec[chan_lo]
-          offset=sample_chan[interp_ind]-chan_lo
-          new_spec=np.zeros(new_naxis)
-          new_spec[interp_ind]=this_spec[chan_lo]+slope*offset
-
-          eq_ind=np.where(np.equal(chan_hi,chan_lo))
-          if np.any(np.isfinite(eq_ind))==True:
-               new_spec[interp_ind[eq_ind]]=this_spec[chan_lo[eq_ind]]
-
-          return new_spec
-
+#begin a loop over the cube to shift the spectrum at each point onto new_vaxis
 
      for i in np.arange(naxis1_in):
           for j in np.arange(naxis2_in):
                if np.isfinite(mom1[i,j])==False:
                     continue
-               if mom1[i,j]==0:
-                    continue
-               data_out[:,i,j]=shift(i,j)
+              
+               if kind is 'value':
+                    vc=align
+
+               if (kind is 'cube') or (kind is 'vfield'):
+                    vc=mom1[i,j]
+
+               this_spec=data_in[:,i,j]
+               
+               data_out[:,i,j]=shift(this_spec,vaxis_in,new_vaxis,vc,
+                                     interp)
 
 #save and write output fits file
      hdus_out[0].data=data_out
      hdus_out[0].header=header_out
      hdus_out.writeto('cube_out.fits')
+
+def shift(this_spec,vaxis_in,new_vaxis,vc,interp=None):
+     """
+     Function to shift a given spectrum to a new velocity axis.
+     the interpolation can be linear, nearest, or cubic
+     """
+
+     this_vaxis=vaxis_in-vc
+
+     orig_chan=np.arange(this_vaxis.size)
+     n_chan=orig_chan.size
+
+     if (interp is None) or (interp is 'linear'):
+          linear_interp=interpolate.interp1d(this_vaxis,this_spec,
+                                             bounds_error=False,
+                                             fill_value=np.nan)
+
+     if interp is 'nearest':
+          linear_interp=interpolate.interp1d(this_vaxis,this_spec,
+                                             bounds_error=False,
+                                             fill_value=np.nan,
+                                             kind='nearest')
+
+     if interp is 'cubic':
+          linear_interp=interpolate.interp1d(this_vaxis,this_spec,
+                                             bounds_error=False,
+                                             fill_value=np.nan,
+                                             kind='cubic')
+
+     new_spec=linear_interp(new_vaxis)
+
+     return new_spec
+
+def vfield(data_v,vaxis):
+     """
+     Generates a velocity field from the input data. invalid data points
+     are filled with nans. A median filter is applied (this should eventually
+     be a user defined option).
+     """
+
+     data_no_nans=data_v*1.0
+     data_no_nans[np.isfinite(data_no_nans)==False]=0
+     mom=np.sum(data_no_nans,axis=0)
+     mom1=data_no_nans[0,:,:]*0.0
+     for i in np.arange(mom[0,:].size):
+          for j in np.arange(mom[:,0].size):
+               if mom[i,j]==0:
+                    mom1[i,j]=np.nan
+                    continue
+               mom1[i,j]=np.dot(vaxis,data_v[:,i,j])/mom[i,j]
+
+     mom1=sig.medfilt(mom1,7)
+
+     return mom1
