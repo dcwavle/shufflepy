@@ -7,8 +7,10 @@ import matplotlib.pyplot as plt
 import scipy.signal as sig
 import scipy.interpolate as interpolate
 import matplotlib.pyplot as plt
+import sys
 
-def shuffle(cube_in,align,kind=None,interp=None):
+
+def shuffle(cube_in,align,kind=None,interp=None,size=None):
      """
      Takes an input cube ('cube_in') and either a cube, velocity field, or value to
      rearrange the velocity axis of cube_in with respect to ('align'). the user must specify
@@ -50,6 +52,19 @@ def shuffle(cube_in,align,kind=None,interp=None):
           naxis1_v=header_v['naxis1']
           naxis2_v=header_v['naxis2']
 
+#do some error checking
+
+          if naxis_in>3:
+               sys.exit("input cube must have 3 dimensions")
+
+          if kind is 'cube' or kind is 'vfield':
+               if (naxis1_in != naxis1_v and naxis2_in != naxis2_v)==False:
+                    sys.exit("inputs must have the same spatial dimensions")
+
+          if kind is 'vfield':
+               if naxis_v>2:
+                    sys.exit("vfield must have 2 dimensions")       
+
 #construct velocity axes and if necessary generate velocity field
 
      vaxis_in=((np.arange(naxis3_in)-(crpix3_in-1))*cdelt3_in+crval3_in)
@@ -68,8 +83,14 @@ def shuffle(cube_in,align,kind=None,interp=None):
           mom1=align
 
 #define the new velocity axis as twice the old axis
-     new_naxis=2*naxis3_in
-     new_cdelt=cdelt3_in
+
+     s=size
+
+     if size is None:
+          s=2
+
+     new_naxis=np.ceiling(2*s*naxis3_in)
+     new_cdelt=cdelt3_in/2
      new_crpix=1
      new_crval=-(new_naxis/2)*new_cdelt
 
@@ -98,6 +119,8 @@ def shuffle(cube_in,align,kind=None,interp=None):
      for i in np.arange(naxis1_in):
           for j in np.arange(naxis2_in):
                if np.isfinite(mom1[i,j])==False:
+                    for k in np.arnage(new_naxis):
+                         data_out[k,i,j]=np.nan
                     continue
               
                if kind is 'value':
