@@ -10,16 +10,15 @@ import matplotlib.pyplot as plt
 import sys
 
 
-def shuffle(cube_in,align,kind=None,interp=None,size=None):
+def function(cube_in,align,kind=None,interp=None,define_axis=False):
      """
      Takes an input cube ('cube_in') and either a cube, velocity field, or value to
-     rearrange the velocity axis of cube_in with respect to ('align'). the user must specify
-     'kind' as either 'cube', 'vfield', or 'value'. if kind='cube', shuffle will generate a
+     rearrange the velocity axis of cube_in with respect to ('align'). the user can specify
+     'kind' as either 'cube', 'vfield', or 'value'. if kind='cube'(default), shuffle will generate a
      velocity field from the given cube. cube_in will then be shuffled onto a new velocity
-     axis such that v=0 corresponds to the value of the genrated or given velocity field.
-     if 'align' is a value, cube_in will be shifted by a constant value.
+     axis such that v=0 corresponds to the value of the genrated or given velocity field or value.
      interp specifies the type of interpolation to use when shifting spectra onto the new
-     velocity axis. the options for the interpolation are 'linear', 'nearest', or 'cubic'
+     velocity axis. the options for the interpolation are 'linear' (default), 'nearest', or 'cubic'
      (WARNING: cubic takes a while to execute)
 
      shuffle will return a file called cube_out.fits
@@ -28,116 +27,156 @@ def shuffle(cube_in,align,kind=None,interp=None,size=None):
      if kind is None:
           kind='cube'
 
-#read input cubes and headers
-     hdus_in=f.open(cube_in)
-     data_in=hdus_in[0].data
-     header_in=hdus_in[0].header
+#read input cubes and headers and grab header info:
+     (data_in,hdr_in,naxis_in,naxis1_in,naxis2_in,naxis3_in,cdelt3_in,
+      crpix3_in,crval3_in)=read(cube_in,kind='cube')
 
-     if (kind is 'cube') or (kind is 'vfield'):
-          hdus_v=f.open(align)
-          data_v=hdus_v[0].data
-          header_v=hdus_v[0].header
+     if kind is 'cube':
+          (data_v,hdr_v,naxis_v,naxis1_v,naxis2_v,naxis3_v,cdelt3_v,
+           crpix3_v,crval3_v)=read(align,kind=kind)
 
-#extract header info
-     naxis_in=header_in['naxis']
-     naxis1_in=header_in['naxis1']
-     naxis2_in=header_in['naxis2']
-     naxis3_in=header_in['naxis3']
-     cdelt3_in=header_in['cdelt3']
-     crpix3_in=header_in['crpix3']
-     crval3_in=header_in['crval3']
-
-     if (kind is 'cube') or (kind is 'vfield'):
-          naxis_v=header_v['naxis']
-          naxis1_v=header_v['naxis1']
-          naxis2_v=header_v['naxis2']
+     if kind is 'vfield':
+          (data_v,hdr_v,naxis_v,naxis1_v,naxis2_v)=read(align,kind=kind) 
 
 #do some error checking
 
-          if naxis_in>3:
-               sys.exit("input cube must have 3 dimensions")
+     if naxis_in>3:
+          sys.exit("input cube must have 3 dimensions")
 
-          if kind is 'cube' or kind is 'vfield':
-               if (naxis1_in != naxis1_v and naxis2_in != naxis2_v)==False:
-                    sys.exit("inputs must have the same spatial dimensions")
+     if kind is 'cube' or kind is 'vfield':
+          if naxis1_in != naxis1_v or naxis2_in != naxis2_v:
+               sys.exit("inputs must have the same spatial dimensions")
 
-          if kind is 'vfield':
-               if naxis_v>2:
-                    sys.exit("vfield must have 2 dimensions")       
+     if kind is 'vfield':
+          if naxis_v>2:
+               sys.exit("vfield must have 2 dimensions")       
 
 #construct velocity axes and if necessary generate velocity field
 
-     vaxis_in=((np.arange(naxis3_in)-(crpix3_in-1))*cdelt3_in+crval3_in)
+     vaxis_in=make_axis(hdr_in)
 
      if kind is 'cube':
-          naxis3_v=header_v['naxis3']
-          cdelt3_v=header_v['cdelt3']
-          crpix3_v=header_v['crpix3']
-          crval3_v=header_v['crval3']
-
           vaxis_v=((np.arange(naxis3_v)-(crpix3_v-1))*cdelt3_v+crval3_v)
+          align=vfield(data_v,vaxis_v)
 
-          mom1=vfield(data_v,vaxis_v)
+#define the new velocity axis. default new_axis is  twice the old axis with half the 
+#velocity step size
+
+     if define_axis==False:
+          new_naxis=4*naxis3_in
+          new_cdelt=cdelt3_in/2
+          new_crpix=1
+          new_crval=-(new_naxis/2)*new_cdelt
+
+     if define_axis==True:
+          new_naxis=raw_input("enter value for new_naxis: ")
+          new_cdelt=raw_input("enter value for new_cdelt: ")
+          new_crpix=raw_input("enter value for new_crpix: ")
+          new_crval=raw_input("enter value for new_crval: ")
+
+     new_vaxis=make_axis(naxis=new_naxis,cdelt=new_cdelt,crpix=new_crpix,
+                crval=new_crval)
+
+#shuffle the cube
+
+     data_out=shuffle(data_in,align,vaxis_in,new_vaxis,kind=kind,interp=interp)
+
+#write to an output fits file 
+
+     hdr_out=hdr_in
+     hdr_out['naxis3']=new_naxis
+     hdr_out['cdelt3']=new_cdelt
+     hdr_out['crpix3']=new_crpix
+     hdr_out['crval3']=new_crval
+
+     hdu_out=f.PrimaryHDU(data_out)
+     hdus_out=f.HDUList([hdu_out])
+     hdus_out[0].header=hdr_out
+
+     hdus_out.writeto('cube_out.fits')
+
+def make_axis(hdr=None,naxis=None,crpix=None,cdelt=None,crval=None):
+
+     """
+     Constructs velocity axis. if hdr=true (default) grabs axis parameters from FITS header. if
+     hdr=False the user is promted for axis parameters.
+     """
+
+     if hdr and (naxis or crpix or cdelt or crval):
+          sys.exit("please input header or specify header parameters, not both")
+
+     if hdr:
+          naxis=hdr['naxis3']
+          crpix=hdr['crpix3']
+          cdelt=hdr['cdelt3']
+          crval=hdr['crval3']
+
+     vaxis=((np.arange(naxis)-(crpix-1))*cdelt+crval)
+
+     return vaxis
+
+def read(fits_file,kind=None):
+     """
+     reads an input fits file. only returns values that 
+     are relevant to the shuffle program
+     """
+
+     hdus=f.open(fits_file)
+     data=hdus[0].data
+     hdr=hdus[0].header
+
+     naxis=hdr['naxis']
+     naxis1=hdr['naxis1']
+     naxis2=hdr['naxis2']
+
+     if kind is 'cube':
+          naxis3=hdr['naxis3']
+          cdelt3=hdr['cdelt3']
+          crpix3=hdr['crpix3']
+          crval3=hdr['crval3']
+
+     if kind is 'cube':
+          return data,hdr,naxis,naxis1,naxis2,naxis3,cdelt3,crpix3,crval3
 
      if kind is 'vfield':
-          mom1=align
+          return data,hdr,naxis,naxis1,naxis2
 
-#define the new velocity axis as twice the old axis
+def shuffle(data_in,align,vaxis_in,new_vaxis,kind=None,interp=None):
+     """
+     takes and input array ("data_in") and a corresponding array, map, or value to
+     rearrange the velocity axis of "data_in" with respect to. Specify the type of 
+     "align" with kind='cube', 'vfield', or 'value'. if "align" is an array, shuffle 
+     will generate a moment map to align "data_in" to. "data_in" must be a 3d array.
+     """
 
-     s=size
+     if interp is None:
+          interp='linear'
 
-     if size is None:
-          s=2
+     sz1=data_in[0,0,:].size
+     sz2=data_in[0,:,0].size
+     sz3=new_vaxis.size
 
-     new_naxis=np.ceiling(2*s*naxis3_in)
-     new_cdelt=cdelt3_in/2
-     new_crpix=1
-     new_crval=-(new_naxis/2)*new_cdelt
+     data_out=np.zeros(sz1*sz2*sz3).reshape(sz3,sz2,sz1)
 
-     new_vaxis=(np.arange(new_naxis)-(new_crpix-1))*new_cdelt+new_crval
-
-#initialize the output cube
-     grid=np.zeros(naxis1_in*naxis2_in*new_naxis).reshape(new_naxis,
-                                                          naxis1_in,naxis2_in)
-     hdu_out=f.PrimaryHDU(grid)
-     hdus_out=f.HDUList([hdu_out])
-     data_out=hdus_out[0].data
-     header_out=hdus_out[0].header
-
-#update the output header
-     header_out=header_in
-     header_out['naxis']=naxis_in
-     header_out['naxis1']=naxis1_in
-     header_out['naxis2']=naxis2_in
-     header_out['naxis3']=new_naxis
-     header_out['cdelt3']=new_cdelt
-     header_out['crpix3']=new_crpix
-     header_out['crval3']=new_crval
-
-#begin a loop over the cube to shift the spectrum at each point onto new_vaxis
-
-     for i in np.arange(naxis1_in):
-          for j in np.arange(naxis2_in):
-               if np.isfinite(mom1[i,j])==False:
-                    for k in np.arnage(new_naxis):
+     for i in np.arange(data_in[0,0,:].size):
+          for j in np.arange(data_in[0,:,0].size):
+               if np.isfinite(align[i,j])==False:
+                    for k in np.arange(new_vaxis.size):
                          data_out[k,i,j]=np.nan
                     continue
-              
+
                if kind is 'value':
                     vc=align
 
                if (kind is 'cube') or (kind is 'vfield'):
-                    vc=mom1[i,j]
+                    vc=align[i,j]
 
                this_spec=data_in[:,i,j]
                
                data_out[:,i,j]=shift(this_spec,vaxis_in,new_vaxis,vc,
                                      interp)
 
-#save and write output fits file
-     hdus_out[0].data=data_out
-     hdus_out[0].header=header_out
-     hdus_out.writeto('cube_out.fits')
+     return data_out
 
 def shift(this_spec,vaxis_in,new_vaxis,vc,interp=None):
      """
@@ -150,24 +189,15 @@ def shift(this_spec,vaxis_in,new_vaxis,vc,interp=None):
      orig_chan=np.arange(this_vaxis.size)
      n_chan=orig_chan.size
 
-     if (interp is None) or (interp is 'linear'):
-          linear_interp=interpolate.interp1d(this_vaxis,this_spec,
-                                             bounds_error=False,
-                                             fill_value=np.nan)
+     if (interp is None):
+          interp='linear'
 
-     if interp is 'nearest':
-          linear_interp=interpolate.interp1d(this_vaxis,this_spec,
+     interpolation=interpolate.interp1d(this_vaxis,this_spec,
                                              bounds_error=False,
                                              fill_value=np.nan,
-                                             kind='nearest')
+                                             kind=interp)
 
-     if interp is 'cubic':
-          linear_interp=interpolate.interp1d(this_vaxis,this_spec,
-                                             bounds_error=False,
-                                             fill_value=np.nan,
-                                             kind='cubic')
-
-     new_spec=linear_interp(new_vaxis)
+     new_spec=interpolation(new_vaxis)
 
      return new_spec
 
