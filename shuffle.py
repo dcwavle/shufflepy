@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import sys
 
 
-def function(cube_in,align,kind=None,interp=None,define_axis=False):
+def align(cube_in,align,kind=None,interp=None,define_axis=False):
      """
      Takes an input cube ('cube_in') and either a cube, velocity field, or value to
      rearrange the velocity axis of cube_in with respect to ('align'). the user can specify
